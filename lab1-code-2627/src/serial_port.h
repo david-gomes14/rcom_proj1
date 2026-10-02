@@ -14,7 +14,6 @@
  * @return a positive number if the port was opened successfully or -1 on error.
  */
 int openSerialPort(const char *serialPort, int baudRate);
-int hfhfsjh;
 
 /**
  * Restore original port settings and close the serial port.
