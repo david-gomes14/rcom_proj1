@@ -12,16 +12,107 @@
 #define _POSIX_SOURCE 1 // POSIX compliant source
 #define BUF_SIZE 256
 
+#define FLAG 0x7E
+#define A_TX 0x03
+#define A_RX 0x01
+#define C_SET 0x03
+#define C_UA 0x07
+
+#define SUP_FRAME_SIZE 5
+
+typedef enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP} frameState;
+
+
+static int receiveSupervisionFrame(unsigned char a, unsigned char c)
+{
+    // ISSO TEM Q SAIR 
+    /*
+    const unsigned char expected[SUP_FRAME_SIZE] = {FLAG, a, c, a ^ c, FLAG};
+    int matched = 0;
+    */
+
+    frameState state = START;
+    
+    do {
+        unsigned char byte;
+        int res = readByteSerialPort(&byte);
+        if (res < 0)
+            return -1;
+        if (res == 0)
+            continue;
+
+            // TRATAR DADOS AQUI
+        
+        switch (state)
+        {
+        // START case
+        case START:
+            if (byte == FLAG){
+                state = FLAG_RCV;
+            } 
+            break; 
+            
+        // FLAG_RCV case
+        case FLAG_RCV:
+            if (byte == a) {
+                state = A_RCV;
+            } else if (byte == FLAG){
+                state = FLAG_RCV;
+            } else {
+                state = START;
+            }
+            break;
+
+        // A_RCV case
+        case A_RCV:
+            if (byte == c){
+                state = C_RCV;
+            } else if (byte == FLAG){
+                state = FLAG_RCV;
+            } else {
+                state = START;
+            }
+            break;
+            
+        // C_RCV case
+        case C_RCV:
+            if (byte == (a ^ c)){
+                state = BCC_OK;
+            } else if (byte == FLAG){
+                state = FLAG_RCV;
+            } else {
+                state = START;
+            }
+            break;
+
+        // BCC_OK case
+        case BCC_OK:
+            if (byte == FLAG){
+                state = STOP;
+            } else {
+                state = START;
+            }
+            break;
+
+        
+        default:
+            break;
+        }
+
+
+
+
+    } while (state != STOP);
+    
+    return 0;
+}
+
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
 int llOpenTx(LinkLayer llParameters)
 {
-    // ----------------------------------------------------
-    // This example code shows how to open the serial port and send a string.
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -30,44 +121,60 @@ int llOpenTx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    // Create string to send
-    unsigned char buf[BUF_SIZE] = {0};
-
-    for (int i = 0; i < BUF_SIZE; i++)
+    // Install the alarm handler. SA_RESTART is not set, so a blocking
+    // read() is interrupted (EINTR) when the alarm expires.
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
     {
-        buf[i] = 'a' + i % 26;
-    }
-
-    // In non-canonical mode, '\n' does not end the writing.
-    // Test this condition by placing a '\n' in the middle of the buffer.
-    // The whole buffer must be sent even with the '\n'.
-    buf[5] = '\n';
-
-    int bytes = writeBytesSerialPort(buf, BUF_SIZE);
-    printf("%d bytes written to serial port\n", bytes);
-
-    // Wait until all bytes have been written to the serial port
-    sleep(1);
-
-    // Close serial port
-    if (closeSerialPort() < 0)
-    {
-        perror("closeSerialPort");
+        perror("sigaction");
+        closeSerialPort();
         return -1;
     }
 
-    printf("Serial port %s closed\n", llParameters.serialPort);
+    const unsigned char set[SUP_FRAME_SIZE] = {FLAG, A_TX, C_SET, A_TX ^ C_SET, FLAG};
+    alarmCount = 0;
 
-    return 0;
+    // First transmission + up to nRetransmissions retransmissions
+    while (alarmCount <= llParameters.nRetransmissions)
+    {
+        if (writeBytesSerialPort(set, SUP_FRAME_SIZE) != SUP_FRAME_SIZE)
+        {
+            perror("writeBytesSerialPort");
+            closeSerialPort();
+            return -1;
+        }
+        printf("SET sent\n");
+
+        alarmEnabled = TRUE;
+        alarm(llParameters.timeout);
+
+        if (receiveSupervisionFrame(A_TX, C_UA) == 0)
+        {
+            alarm(0); // UA received: disable the pending alarm
+            alarmEnabled = FALSE;
+            printf("UA received. Connection established\n");
+            return 0;
+        }
+
+        if (errno != EINTR)
+        {
+            perror("readByteSerialPort");
+            alarm(0);
+            closeSerialPort();
+            return -1;
+        }
+        // Interrupted by the alarm: retransmit SET
+    }
+
+    printf("No UA received after %d retransmissions. Giving up\n",
+           llParameters.nRetransmissions);
+    closeSerialPort();
+    return -1;
 }
 
 int llOpenRx(LinkLayer llParameters)
 {
-    // ----------------------------------------------------
-    // This example code shows how to open the serial port and receive a string.
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
     {
         perror("openSerialPort");
@@ -76,43 +183,21 @@ int llOpenRx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    // Read from serial port until the 'z' char is received.
-
-    // NOTE: This while() cycle is a simple example showing how to read from the serial port.
-    // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
-
-    // TODO: Save the received bytes in a buffer array and print it at the end of the program.
-    volatile int STOP = FALSE;
-    int nBytesBuf = 0;
-
-    while (STOP == FALSE)
+    if (receiveSupervisionFrame(A_TX, C_SET) != 0) 
     {
-        // Read one byte from serial port.
-        // NOTE: You must check how many bytes were actually read by reading the return value.
-        // In this example, we assume that the byte is always read, which may not be true.
-        unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
-        nBytesBuf += bytes;
-
-        printf("Byte received: %c\n", byte);
-
-        if (byte == 'z')
-        {
-            printf("Received 'z' char. Stop reading from serial port.\n");
-            STOP = TRUE;
-        }
-    }
-
-    printf("Total bytes received: %d\n", nBytesBuf);
-
-    // Close serial port
-    if (closeSerialPort() < 0)
-    {
-        perror("closeSerialPort");
+        perror("readBytesSerialPort");
+        closeSerialPort();
         return -1;
     }
 
-    printf("Serial port %s closed\n", llParameters.serialPort);
+    const unsigned char ua[SUP_FRAME_SIZE] = {FLAG, A_TX, C_UA, A_TX ^ C_UA, FLAG};
+    if (writeBytesSerialPort(ua, SUP_FRAME_SIZE) != SUP_FRAME_SIZE)
+    {
+        perror("writeBytesSerialPort");
+        closeSerialPort();
+        return -1;
+    }
+    printf("UA sent. Connection established\n");
 
     return 0;
 }
