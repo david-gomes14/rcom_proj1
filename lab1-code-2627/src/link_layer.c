@@ -121,56 +121,29 @@ int llOpenTx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    // Install the alarm handler. SA_RESTART is not set, so a blocking
-    // read() is interrupted (EINTR) when the alarm expires.
-    struct sigaction act = {0};
-    act.sa_handler = &alarmHandler;
-    if (sigaction(SIGALRM, &act, NULL) == -1)
+    const unsigned char set[SUP_FRAME_SIZE] = {
+        FLAG, A_TX, C_SET, A_TX ^ C_SET, FLAG
+    };
+
+    if (writeBytesSerialPort(set, SUP_FRAME_SIZE) != SUP_FRAME_SIZE)
     {
-        perror("sigaction");
+        perror("writeBytesSerialPort");
         closeSerialPort();
         return -1;
     }
 
-    const unsigned char set[SUP_FRAME_SIZE] = {FLAG, A_TX, C_SET, A_TX ^ C_SET, FLAG};
-    alarmCount = 0;
+    printf("SET sent\n");
 
-    // First transmission + up to nRetransmissions retransmissions
-    while (alarmCount <= llParameters.nRetransmissions)
+    if (receiveSupervisionFrame(A_TX, C_UA) != 0)
     {
-        if (writeBytesSerialPort(set, SUP_FRAME_SIZE) != SUP_FRAME_SIZE)
-        {
-            perror("writeBytesSerialPort");
-            closeSerialPort();
-            return -1;
-        }
-        printf("SET sent\n");
-
-        alarmEnabled = TRUE;
-        alarm(llParameters.timeout);
-
-        if (receiveSupervisionFrame(A_TX, C_UA) == 0)
-        {
-            alarm(0); // UA received: disable the pending alarm
-            alarmEnabled = FALSE;
-            printf("UA received. Connection established\n");
-            return 0;
-        }
-
-        if (errno != EINTR)
-        {
-            perror("readByteSerialPort");
-            alarm(0);
-            closeSerialPort();
-            return -1;
-        }
-        // Interrupted by the alarm: retransmit SET
+        perror("receiveSupervisionFrame");
+        closeSerialPort();
+        return -1;
     }
 
-    printf("No UA received after %d retransmissions. Giving up\n",
-           llParameters.nRetransmissions);
-    closeSerialPort();
-    return -1;
+    printf("UA received. Connection established\n");
+
+    return 0;
 }
 
 int llOpenRx(LinkLayer llParameters)
@@ -183,24 +156,29 @@ int llOpenRx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    if (receiveSupervisionFrame(A_TX, C_SET) != 0) 
+    if (receiveSupervisionFrame(A_TX, C_SET) != 0)
     {
-        perror("readBytesSerialPort");
+        perror("receiveSupervisionFrame");
         closeSerialPort();
         return -1;
     }
 
-    const unsigned char ua[SUP_FRAME_SIZE] = {FLAG, A_TX, C_UA, A_TX ^ C_UA, FLAG};
+    const unsigned char ua[SUP_FRAME_SIZE] = {
+        FLAG, A_TX, C_UA, A_TX ^ C_UA, FLAG
+    };
+
     if (writeBytesSerialPort(ua, SUP_FRAME_SIZE) != SUP_FRAME_SIZE)
     {
         perror("writeBytesSerialPort");
         closeSerialPort();
         return -1;
     }
+
     printf("UA sent. Connection established\n");
 
     return 0;
 }
+
 
 ////////////////////////////////////////////////
 // LLSEND
