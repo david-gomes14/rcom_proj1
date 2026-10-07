@@ -25,12 +25,11 @@
 
 #define SUP_FRAME_SIZE 5
 
-typedef enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP} frameState;
+typedef enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP } frameState;
 
 
 static int receiveSupervisionFrame(unsigned char a, unsigned char c)
 {
-    // ISSO TEM Q SAIR 
     /*
     const unsigned char expected[SUP_FRAME_SIZE] = {FLAG, a, c, a ^ c, FLAG};
     int matched = 0;
@@ -38,7 +37,7 @@ static int receiveSupervisionFrame(unsigned char a, unsigned char c)
 
     frameState state = START;
     
-    do {
+    while (state != STOP) {
         unsigned char byte;
         int res = readByteSerialPort(&byte);
         if (res < 0)
@@ -46,7 +45,7 @@ static int receiveSupervisionFrame(unsigned char a, unsigned char c)
         if (res == 0)
             continue;
 
-            // TRATAR DADOS AQUI
+            // fazer as cenas aqui
         
         switch (state)
         {
@@ -107,7 +106,7 @@ static int receiveSupervisionFrame(unsigned char a, unsigned char c)
 
 
 
-    } while (state != STOP);
+    }
     
     return 0;
 }
