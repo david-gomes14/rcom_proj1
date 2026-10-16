@@ -25,12 +25,15 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     if (strcmp(role, "tx") == 0)
     {
         unsigned char bufferzao[10] = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x1A, 0x1B, 0x1C, 0x1D};
+        unsigned char response[256];
 
         llOpenTx(llParameters);
-        if(llSend(bufferzao, 10) > 0) {
+        if(llSend(bufferzao, 10) < 0) {
             printf("Certo\n");
         }
 
+        int byte_response = llReceive(response);
+        printf("%d\n", byte_response);
     }
     else if (strcmp(role, "rx") == 0)
     {

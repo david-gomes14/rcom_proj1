@@ -237,6 +237,7 @@ int llSend(const unsigned char *buf, int bufSize) {
             if (c_rcv == expected_rr) { // Recepção bem sucedida!
                 accepted = TRUE;
                 alarm(0); // Desligar alarme
+                printf("chegou aqui");
                 tx_Ns = (tx_Ns + 1) % 2; // Avançar para a próxima trama (0->1 ou 1->0)
             } else if (c_rcv == expected_rej) { // Trama com erros
                 alarm(0); // Cancelar alarme para retransmitir imediatamente
@@ -321,7 +322,7 @@ int llReceive(unsigned char *packet) {
         // 1º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
         if (bcc2_calc != bcc2_received) {
             unsigned char rej_c = (n_s == 0) ? 0x54 : 0x55;
-            sendSupervisionFrame(A_RX, rej_c); // A=0x03 para respostas do Rx
+            sendSupervisionFrame(A_TX, rej_c); // A=0x03 para respostas do Rx
             continue; // Voltar ao início e esperar que o Emissor retransmita
         }
         
@@ -329,7 +330,7 @@ int llReceive(unsigned char *packet) {
         if (n_s == rx_expected_Ns) {
             rx_expected_Ns = (rx_expected_Ns + 1) % 2; // Alternar a que esperamos (0->1, 1->0)
             unsigned char rr_c = (rx_expected_Ns == 0) ? 0xAA : 0xAB;
-            sendSupervisionFrame(A_RX, rr_c);
+            sendSupervisionFrame(A_TX, rr_c);
             
             // Retorna o tamanho do buffer de dados menos o byte do BCC2
             return payload_idx - 1; 
@@ -337,7 +338,7 @@ int llReceive(unsigned char *packet) {
         // 3º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
         else {
             unsigned char rr_c = (rx_expected_Ns == 0) ? 0xAA : 0xAB; // RR pede sempre a próxima
-            sendSupervisionFrame(A_RX, rr_c);
+            sendSupervisionFrame(A_TX, rr_c);
             // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
             continue; 
         }
