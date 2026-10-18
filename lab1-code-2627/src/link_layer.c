@@ -15,12 +15,18 @@
 #define FLAG 0x7E
 #define A_TX 0x03
 #define A_RX 0x01
+
 #define C_SET 0x03
 #define C_UA 0x07
+
+#define C_RR0 0xAA
+#define C_RR1 0xAB
+#define C_REJ0 0x54
+#define C_REJ1 0x55
+
 #define C_DISC 0x0B // Comando para fecho de ligação
 
 #define FALSE 0
-
 #define TRUE 1
 #define SUP_FRAME_SIZE 5
 
@@ -105,7 +111,6 @@ int llOpenTx(LinkLayer llParameters) {
     // Guardar configurações da camada de aplicação
     ll_timeout = llParameters.timeout;
     ll_nRetransmissions = llParameters.nRetransmissions;
-    tx_Ns = 0;
 
     struct sigaction act = {0};
     act.sa_handler = &alarmHandler;
@@ -154,11 +159,19 @@ int llOpenRx(LinkLayer llParameters) {
         return -1;
     }
     printf("Serial port %s opened\n", llParameters.serialPort);
-
+    
+    // Guardar configurações da camada de aplicação
     ll_timeout = llParameters.timeout;
     ll_nRetransmissions = llParameters.nRetransmissions;
-    rx_expected_Ns = 0;
 
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        closeSerialPort();
+        return -1;
+    }
+    
     unsigned char c_rcv;
     int connected = FALSE;
 
@@ -224,8 +237,8 @@ int llSend(const unsigned char *buf, int bufSize) {
     alarmEnabled = FALSE;
 
     // Calcular as respostas esperadas para a próxima trama e trama atual
-    unsigned char expected_rr = (tx_Ns == 0) ? 0xAB : 0xAA; // 0xAB = RR1 ou 0xAA = RR0
-    unsigned char expected_rej = (tx_Ns == 0) ? 0x54 : 0x55; // 0x54 = REJ0 ou 0x55 = REJ1
+    unsigned char expected_rr = (tx_Ns == 0) ? C_RR1 : C_RR0; // 0xAB = RR1 ou 0xAA = RR0
+    unsigned char expected_rej = (tx_Ns == 0) ? C_REJ0 : C_REJ1; // 0x54 = REJ0 ou 0x55 = REJ1
     unsigned char c_rcv = 0;
 
     while (alarmCount <= ll_nRetransmissions && !accepted) {
@@ -324,7 +337,7 @@ int llReceive(unsigned char *packet) {
         // Tesstar os cenários:
         // 1º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
         if (bcc2_calc != bcc2_received) {
-            unsigned char rej_c = (n_s == 0) ? 0x54 : 0x55;
+            unsigned char rej_c = (n_s == 0) ? C_REJ0 : C_REJ1;
             sendSupervisionFrame(A_RX, rej_c); // A=0x03 para respostas do Rx
             continue; // Voltar ao início e esperar que o Emissor retransmita
         }
@@ -332,7 +345,7 @@ int llReceive(unsigned char *packet) {
         // 2º Cenário: Trama Correta E Esperada -> Enviar RR e entregar os dados
         if (n_s == rx_expected_Ns) {
             rx_expected_Ns = (rx_expected_Ns + 1) % 2; // Alternar a que esperamos (0->1, 1->0)
-            unsigned char rr_c = (rx_expected_Ns == 0) ? 0xAA : 0xAB;
+            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1;
             sendSupervisionFrame(A_RX, rr_c);
             
             // Retorna o tamanho do buffer de dados menos o byte do BCC2
@@ -340,7 +353,7 @@ int llReceive(unsigned char *packet) {
         } 
         // 3º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
         else {
-            unsigned char rr_c = (rx_expected_Ns == 0) ? 0xAA : 0xAB; // RR pede sempre a próxima
+            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1; // RR pede sempre a próxima
             sendSupervisionFrame(A_RX, rr_c);
             // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
             continue; 
@@ -352,13 +365,85 @@ int llReceive(unsigned char *packet) {
 // LLCLOSE
 ////////////////////////////////////////////////
 int llCloseTx()
-{
-    // TODO: Implement this function
+{    
+    alarmCount = 0;
+    alarmEnabled = FALSE;
+
+    unsigned char c_rcv;
+    int connected = TRUE;
+
+    while (alarmCount <= ll_nRetransmissions && connected) {
+
+        if (!alarmEnabled) {
+            sendSupervisionFrame(A_TX, C_DISC); // Envia DISC
+            printf("DISC sent.\n");
+            alarm(ll_timeout);
+            alarmEnabled = TRUE;
+        }
+
+        if (readControlFrame(A_RX, &c_rcv) == 0) {
+            if (c_rcv == C_DISC) {
+                sendSupervisionFrame(A_RX, C_UA); // Envia UA
+                printf("DISC received. UA sent. Disconnecting Serial Port\n");
+                alarm(0); // Desliga alarme
+                alarmEnabled = FALSE;
+                connected = FALSE;
+                closeSerialPort();
+            }
+        }
+    }
+
+    if (connected) {
+        alarm(0);
+        closeSerialPort();
+        return -1;
+    }
+
     return 0;
 }
 
 int llCloseRx()
 {
-    // TODO: Implement this function
+    alarmCount = 0;
+    alarmEnabled = FALSE;
+
+    unsigned char c_rcv;
+    int connected = TRUE;
+
+    while (connected) {
+        if (readControlFrame(A_TX, &c_rcv) == 0) {
+            if (c_rcv == C_DISC) {
+                printf("DISC received.\n");
+                break;
+            }
+        }
+    }
+
+    while (alarmCount <= ll_nRetransmissions && connected) {
+
+        if (!alarmEnabled) {
+            sendSupervisionFrame(A_RX, C_DISC); // Envia DISC
+            printf("DISC sent.\n");
+            alarm(ll_timeout);
+            alarmEnabled = TRUE;
+        }
+
+        if (readControlFrame(A_RX, &c_rcv) == 0) {
+            if (c_rcv == C_UA) {
+                printf("UA received. Disconnecting Serial Port\n");
+                alarm(0); // Desliga alarme
+                alarmEnabled = FALSE;
+                connected = FALSE;
+                closeSerialPort();
+            }
+        }
+    }
+
+    if (connected) {
+        alarm(0);
+        closeSerialPort();
+        return -1;
+    }
+
     return 0;
 }

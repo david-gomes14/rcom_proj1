@@ -26,15 +26,19 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     {
         unsigned char bufferzao[10] = {0x0A, 0x0B, 0x0C, 0x0D, 0x7E, 0x0F, 0x1A, 0x7D, 0x1C, 0x1D};
 
-        if(llOpenTx(llParameters) < 0) {
+        if (llOpenTx(llParameters) < 0) {
             return;
         }
 
-        if(llSend(bufferzao, 10) < 0) {
+        if (llSend(bufferzao, 10) < 0) {
             return;
         }
 
-        if(llSend(bufferzao, 10) < 0) {
+        if (llSend(bufferzao, 10) < 0) {
+            return;
+        }
+
+        if (llCloseTx() < 0) {
             return;
         }
 
@@ -45,10 +49,18 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         llOpenRx(llParameters);
         int bytes_lidos = llReceive(received);        
-        printf("%d\n", bytes_lidos);
+        printf("Recebi %d bytes\n", bytes_lidos);
+        for (int i = 0; i < bytes_lidos; i++) {
+            printf("0x%02X ", received[i]);
+        }
+        printf("\n");
 
         int bytes_lidos2 = llReceive(received);        
-        printf("%d\n", bytes_lidos2);
+        printf("Recebi %d bytes\n", bytes_lidos2);
+
+        if (llCloseRx() < 0) {
+            return;
+        }
     }
     else
     {
