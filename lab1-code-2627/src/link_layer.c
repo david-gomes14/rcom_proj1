@@ -56,7 +56,7 @@ int sendSupervisionFrame(unsigned char a, unsigned char c) {
 
 // Função auxiliar genérica para ler tramas S ou U (útil para ler RR e REJ)
 // Guarda o valor do campo de controlo lido no ponteiro 'c'
-int readControlFrame(unsigned char expected_a, unsigned char *c) {
+int readSupervisionFrame(unsigned char expected_a, unsigned char *c) {
     frameState state = START;
     while (state != STOP) {
         unsigned char byte;
@@ -135,7 +135,7 @@ int llOpenTx(LinkLayer llParameters) {
 
         unsigned char c_rcv;
         // Fica à espera da resposta e valida-a
-        if (readControlFrame(A_TX, &c_rcv) == 0) { 
+        if (readSupervisionFrame(A_TX, &c_rcv) == 0) { 
             if (c_rcv == C_UA) { // Recebeu UA (A=0x03)
                 connected = TRUE;
                 alarm(0); // Desliga alarme
@@ -177,7 +177,7 @@ int llOpenRx(LinkLayer llParameters) {
 
     // Fica passivamente à espera do SET
     while (!connected) {
-        if (readControlFrame(A_TX, &c_rcv) == 0) {
+        if (readSupervisionFrame(A_TX, &c_rcv) == 0) {
             if (c_rcv == C_SET) {
                 sendSupervisionFrame(A_TX, C_UA); // Responde com UA
                 printf("SET received, UA sent. Connection established\n");
@@ -250,7 +250,7 @@ int llSend(const unsigned char *buf, int bufSize) {
         }
         
         // Esperar e ler a resposta
-        if (readControlFrame(A_RX, &c_rcv) == 0) {
+        if (readSupervisionFrame(A_RX, &c_rcv) == 0) {
             if (c_rcv == expected_rr) { // Recepção bem sucedida!
                 accepted = TRUE;
                 alarm(0); // Desligar alarme
@@ -381,7 +381,7 @@ int llCloseTx()
             alarmEnabled = TRUE;
         }
 
-        if (readControlFrame(A_RX, &c_rcv) == 0) {
+        if (readSupervisionFrame(A_RX, &c_rcv) == 0) {
             if (c_rcv == C_DISC) {
                 sendSupervisionFrame(A_RX, C_UA); // Envia UA
                 printf("DISC received. UA sent. Disconnecting Serial Port\n");
@@ -411,7 +411,7 @@ int llCloseRx()
     int connected = TRUE;
 
     while (connected) {
-        if (readControlFrame(A_TX, &c_rcv) == 0) {
+        if (readSupervisionFrame(A_TX, &c_rcv) == 0) {
             if (c_rcv == C_DISC) {
                 printf("DISC received.\n");
                 break;
@@ -428,7 +428,7 @@ int llCloseRx()
             alarmEnabled = TRUE;
         }
 
-        if (readControlFrame(A_RX, &c_rcv) == 0) {
+        if (readSupervisionFrame(A_RX, &c_rcv) == 0) {
             if (c_rcv == C_UA) {
                 printf("UA received. Disconnecting Serial Port\n");
                 alarm(0); // Desliga alarme
