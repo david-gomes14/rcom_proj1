@@ -24,16 +24,20 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     if (strcmp(role, "tx") == 0)
     {
-        unsigned char bufferzao[10] = {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x1A, 0x1B, 0x1C, 0x1D};
-        unsigned char response[256];
+        unsigned char bufferzao[10] = {0x0A, 0x0B, 0x0C, 0x0D, 0x7E, 0x0F, 0x1A, 0x7D, 0x1C, 0x1D};
 
-        llOpenTx(llParameters);
-        if(llSend(bufferzao, 10) < 0) {
-            printf("Certo\n");
+        if(llOpenTx(llParameters) < 0) {
+            return;
         }
 
-        int byte_response = llReceive(response);
-        printf("%d\n", byte_response);
+        if(llSend(bufferzao, 10) < 0) {
+            return;
+        }
+
+        if(llSend(bufferzao, 10) < 0) {
+            return;
+        }
+
     }
     else if (strcmp(role, "rx") == 0)
     {
@@ -42,6 +46,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         llOpenRx(llParameters);
         int bytes_lidos = llReceive(received);        
         printf("%d\n", bytes_lidos);
+
+        int bytes_lidos2 = llReceive(received);        
+        printf("%d\n", bytes_lidos2);
     }
     else
     {
