@@ -135,7 +135,7 @@ int llOpenTx(LinkLayer llParameters) {
 
         unsigned char c_rcv;
         // Fica à espera da resposta e valida-a
-        if (readSupervisionFrame(A_TX, &c_rcv) == 0) { 
+        if (readSupervisionFrame(A_TX, &c_rcv) == 0) {
             if (c_rcv == C_UA) { // Recebeu UA (A=0x03)
                 connected = TRUE;
                 alarm(0); // Desliga alarme
@@ -447,3 +447,8 @@ int llCloseRx()
 
     return 0;
 }
+
+
+// ver o caso do bbc1 estar bem mas o bcc2 estar errado
+// falta os control and data packets na application_layer e a state machine
+// dps apagar estas linhas até ao 449
