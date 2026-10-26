@@ -11,10 +11,6 @@
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
 {
-    // ----------------------------------------------------
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     LinkLayer llParameters = {
         .baudRate = baudRate,
         .nRetransmissions = nTries,
@@ -24,70 +20,80 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     if (strcmp(role, "tx") == 0)
     {
-        // Abrir ligação na camada de enlace
-        if (llOpenTx(llParameters) < 0) {
-            printf("Erro: llOpenTx falhou.\n");
-            return;
-        }
-
-        // Abrir o ficheiro para leitura
+        // Abrir o ficheiro ANTES da ligação, para não deixar a ligação aberta
+        // se o ficheiro não existir.
         FILE *file = fopen(filename, "rb");
         if (file == NULL) {
             printf("Erro: não foi possível abrir o ficheiro '%s'.\n", filename);
             return;
         }
 
-        // Calcular o tamanho do ficheiro
         fseek(file, 0, SEEK_END);
         long fileSize = ftell(file);
-        fseek(file, 0, SEEK_SET);
+        rewind(file);
 
-        // Determinar quantos bytes são necessários para representar o tamanho
-        long tmp = fileSize;
-        unsigned char fileSizeBytes[sizeof(long)];
-        int fileSizeNumBytes = 0;
-        do {
-            fileSizeBytes[fileSizeNumBytes++] = tmp & 0xFF;
-            tmp >>= 8;
-        } while (tmp > 0);
+        printf("Tamanho do ficheiro '%s': %ld bytes\n", filename, fileSize);
 
-        int filenameLen = strlen(filename);
-
-        // -------------------------------------------------------
-        // Construir e enviar o pacote START (C = 1)
-        // Formato: C | T=0 | L(size) | V(size) | T=1 | L(name) | V(name)
-        // -------------------------------------------------------
-        unsigned char controlPacket[MAX_PAYLOAD_SIZE];
-        int idx = 0;
-
-        controlPacket[idx++] = 1; // C = 1 (START)
-
-        // TLV para o tamanho do ficheiro (T = 0)
-        controlPacket[idx++] = 0;                // T = 0
-        controlPacket[idx++] = fileSizeNumBytes;  // L
-        for (int i = 0; i < fileSizeNumBytes; i++) {
-            controlPacket[idx++] = fileSizeBytes[i]; // V (little-endian)
-        }
-
-        // TLV para o nome do ficheiro (T = 1)
-        controlPacket[idx++] = 1;            // T = 1
-        controlPacket[idx++] = filenameLen;  // L
-        memcpy(&controlPacket[idx], filename, filenameLen);
-        idx += filenameLen;
-
-        if (llSend(controlPacket, idx) < 0) {
-            printf("Erro: falha ao enviar pacote START.\n");
+        if (fileSize <= 0) {
+            printf("Erro: ficheiro vazio ou erro ao obter tamanho.\n");
             fclose(file);
             return;
         }
 
-        // -------------------------------------------------------
-        // Enviar pacotes de DADOS (C = 2)
-        // Formato: C | L2 | L1 | dados[K]  onde K = 256*L2 + L1
-        // -------------------------------------------------------
-        int maxDataPerPacket = MAX_PAYLOAD_SIZE - 3; // 3 bytes: C + L2 + L1
+        int filenameLen = strlen(filename);
+        // L é 1 byte (<=255) e o pacote START tem de caber em MAX_PAYLOAD_SIZE
+        // (1 C + 2+4 TLV tamanho + 2 TLV nome + filenameLen)
+        if (filenameLen > 255 || 9 + filenameLen > MAX_PAYLOAD_SIZE) {
+            printf("Erro: nome do ficheiro demasiado longo (%d).\n", filenameLen);
+            fclose(file);
+            return;
+        }
+
+        unsigned char fileSizeBytes[4];
+        fileSizeBytes[0] = (fileSize >> 24) & 0xFF;
+        fileSizeBytes[1] = (fileSize >> 16) & 0xFF;
+        fileSizeBytes[2] = (fileSize >> 8)  & 0xFF;
+        fileSizeBytes[3] =  fileSize        & 0xFF;
+        int fileSizeNumBytes = 4;
+
+        if (llOpenTx(llParameters) < 0) {
+            printf("Erro: llOpenTx falhou.\n");
+            fclose(file);
+            return;
+        }
+
+        // ---------------- START (C = 1) ----------------
+        unsigned char controlPacket[MAX_PAYLOAD_SIZE];
+        int idx = 0;
+
+        controlPacket[idx++] = 1;
+        controlPacket[idx++] = 0;
+        controlPacket[idx++] = fileSizeNumBytes;
+        for (int i = 0; i < fileSizeNumBytes; i++) {
+            controlPacket[idx++] = fileSizeBytes[i];
+        }
+        controlPacket[idx++] = 1;
+        controlPacket[idx++] = filenameLen;
+        memcpy(&controlPacket[idx], filename, filenameLen);
+        idx += filenameLen;
+
+        if (llSend(controlPacket, idx) < 0) {
+            printf("Erro ao enviar START (llSend falhou).\n");
+            fclose(file);
+            return;
+        }
+        printf("START enviado (%d bytes).\n", idx);
+
+        // ---------------- DADOS (C = 2) ----------------
+        int maxDataPerPacket = MAX_PAYLOAD_SIZE - 3;
         unsigned char dataPacket[MAX_PAYLOAD_SIZE];
         long bytesRemaining = fileSize;
+        int packetNumber = 0;
+
+        rewind(file);
+
+        printf("A iniciar envio de dados: bytesRemaining=%ld, maxDataPerPacket=%d\n",
+               bytesRemaining, maxDataPerPacket);
 
         while (bytesRemaining > 0) {
             int chunkSize = (bytesRemaining > maxDataPerPacket)
@@ -96,61 +102,176 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
             int bytesRead = fread(&dataPacket[3], 1, chunkSize, file);
             if (bytesRead <= 0) {
-                printf("Erro: falha na leitura do ficheiro.\n");
+                printf("Erro ao ler o ficheiro (pacote de dados %d): lidos=%d, em falta=%ld.\n",
+                       packetNumber, bytesRead, bytesRemaining);
                 fclose(file);
                 return;
             }
 
-            dataPacket[0] = 2;                        // C = 2 (DATA)
-            dataPacket[1] = (bytesRead >> 8) & 0xFF;  // L2
-            dataPacket[2] = bytesRead & 0xFF;          // L1
+            dataPacket[0] = 2;
+            dataPacket[1] = (bytesRead >> 8) & 0xFF;
+            dataPacket[2] = bytesRead & 0xFF;
 
             if (llSend(dataPacket, 3 + bytesRead) < 0) {
-                printf("Erro: falha ao enviar pacote de dados.\n");
+                printf("Erro ao enviar Dados (pacote %d, %d bytes, em falta %ld).\n",
+                       packetNumber, bytesRead, bytesRemaining);
                 fclose(file);
                 return;
             }
 
             bytesRemaining -= bytesRead;
+            packetNumber++;
         }
 
-        // -------------------------------------------------------
-        // Construir e enviar o pacote END (C = 3)
-        // Mesma informação TLV que o pacote START
-        // -------------------------------------------------------
-        controlPacket[0] = 3; // C = 3 (END)
+        printf("Dados enviados: %d pacotes.\n", packetNumber);
+
+        // ---------------- END (C = 3) ----------------
+        controlPacket[0] = 3;
 
         if (llSend(controlPacket, idx) < 0) {
-            printf("Erro: falha ao enviar pacote END.\n");
+            printf("Erro ao enviar END (llSend falhou).\n");
             fclose(file);
             return;
         }
+        printf("END enviado.\n");
 
-        // Fechar o ficheiro e a ligação
         fclose(file);
 
         if (llCloseTx() < 0) {
             printf("Erro: llCloseTx falhou.\n");
             return;
         }
-
     }
     else if (strcmp(role, "rx") == 0)
     {
-        unsigned char received[256];
-
-        llOpenRx(llParameters);
-        int bytes_lidos = llReceive(received);        
-        printf("Recebi %d bytes\n", bytes_lidos);
-        for (int i = 0; i < bytes_lidos; i++) {
-            printf("0x%02X ", received[i]);
+        if (llOpenRx(llParameters) < 0) {
+            printf("Erro: llOpenRx falhou.\n");
+            return;
         }
-        printf("\n");
 
-        int bytes_lidos2 = llReceive(received);        
-        printf("Recebi %d bytes\n", bytes_lidos2);
+        // Margem de segurança: llReceive pode escrever o BCC2 (e bytes extra
+        // em caso de erro) no buffer antes de o validar.
+        unsigned char packet[MAX_PAYLOAD_SIZE * 2];
+        FILE *file = NULL;
+        long fileSize = 0;
+        char receivedFilename[256] = {0};
+
+        while (1) {
+            int packetSize = llReceive(packet);
+            if (packetSize < 0) {
+                printf("Erro: llReceive falhou.\n");
+                if (file != NULL) fclose(file);
+                return;
+            }
+            if (packetSize < 1) {
+                continue; // pacote vazio, ignorar
+            }
+
+            unsigned char control = packet[0];
+
+            if (control == 1) {
+                // ---------------- START: parsing TLV ----------------
+                int idx = 1;
+                fileSize = 0;
+                receivedFilename[0] = '\0';
+
+                while (idx < packetSize) {
+                    // Precisamos de pelo menos T e L
+                    if (idx + 2 > packetSize) {
+                        printf("Erro: cabeçalho TLV truncado (idx=%d, packetSize=%d).\n",
+                               idx, packetSize);
+                        if (file != NULL) fclose(file);
+                        return;
+                    }
+
+                    unsigned char type = packet[idx++];
+                    unsigned char length = packet[idx++];
+
+                    // O valor V tem de caber dentro do pacote
+                    if (idx + length > packetSize) {
+                        printf("Erro: TLV (T=%d, L=%d) excede o pacote (idx=%d, packetSize=%d).\n",
+                               type, length, idx, packetSize);
+                        if (file != NULL) fclose(file);
+                        return;
+                    }
+
+                    if (type == 0) {
+                        if (length > sizeof(long)) {
+                            printf("Erro: tamanho do ficheiro com L=%d inválido.\n", length);
+                            if (file != NULL) fclose(file);
+                            return;
+                        }
+                        fileSize = 0;
+                        for (int i = 0; i < length; i++) {
+                            fileSize = (fileSize << 8) | packet[idx + i];
+                        }
+                        idx += length;
+                    }
+                    else if (type == 1) {
+                        // Garantir espaço para o '\0' em receivedFilename
+                        if (length >= sizeof(receivedFilename)) {
+                            printf("Erro: nome do ficheiro demasiado longo (L=%d).\n", length);
+                            if (file != NULL) fclose(file);
+                            return;
+                        }
+                        memcpy(receivedFilename, &packet[idx], length);
+                        receivedFilename[length] = '\0';
+                        idx += length;
+                    }
+                    else {
+                        idx += length; // tipo desconhecido — já validado acima
+                    }
+                }
+
+                printf("Ficheiro a receber: '%s' (%ld bytes)\n",
+                       receivedFilename, fileSize);
+
+                // Fechar ficheiro anterior se chegar um START repetido
+                if (file != NULL) {
+                    fclose(file);
+                    file = NULL;
+                }
+
+                // Abrir estritamente com o argumento 'filename'
+                file = fopen(filename, "wb");
+                if (file == NULL) {
+                    printf("Erro: não foi possível criar o ficheiro '%s'.\n", filename);
+                    return;
+                }
+            }
+            else if (control == 2) {
+                // ---------------- DADOS ----------------
+                if (packetSize < 3) {
+                    printf("Erro: pacote de dados truncado (packetSize=%d).\n", packetSize);
+                    continue;
+                }
+
+                int K = 256 * packet[1] + packet[2];
+
+                if (K > packetSize - 3) {
+                    printf("Erro: K=%d excede os dados do pacote (%d).\n",
+                           K, packetSize - 3);
+                    continue;
+                }
+
+                if (file != NULL) {
+                    fwrite(&packet[3], 1, K, file);
+                }
+            }
+            else if (control == 3) {
+                // ---------------- END ----------------
+                printf("Receção concluída.\n");
+
+                if (file != NULL) {
+                    fclose(file);
+                    file = NULL;
+                }
+                break;
+            }
+        }
 
         if (llCloseRx() < 0) {
+            printf("Erro: llCloseRx falhou.\n");
             return;
         }
     }
