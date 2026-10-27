@@ -271,8 +271,9 @@ int llSend(const unsigned char *buf, int bufSize) {
 // LLRECEIVE
 ////////////////////////////////////////////////
 int llReceive(unsigned char *packet) {
+
     // Loop infinito até ser recebida uma trama válida E nova
-    while (1) {
+    while (TRUE) {
         frameState state = START;
         unsigned char a, c;
         int payload_idx = 0;
@@ -292,7 +293,7 @@ int llReceive(unsigned char *packet) {
                     else if (byte != FLAG) state = START;
                     break;
                 case A_RCV: 
-                    if (byte == 0x00 || byte == 0x80) { c = byte; state = C_RCV; }
+                    if (byte == 0x00 || byte == 0x80 || byte == C_SET) { c = byte; state = C_RCV; }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START; // Ignora se não for trama I
                     break;
@@ -302,6 +303,17 @@ int llReceive(unsigned char *packet) {
                     else state = START;
                     break;
                 case BCC_OK: // Começam os dados
+                    if (c == C_SET) {
+                        if (byte == FLAG) {
+                            sendSupervisionFrame(A_TX, C_UA);
+                            state = START;
+                        }
+                        else {
+                            state = START;
+                        }
+                        break;
+                    }
+
                     if (byte == FLAG) {
                         state = STOP; // Terminou a trama
                     } else if (byte == 0x7D) {
@@ -335,14 +347,22 @@ int llReceive(unsigned char *packet) {
         unsigned char n_s = (c == 0x80) ? 1 : 0;
         
         // Tesstar os cenários:
-        // 1º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
+        // 1º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
+        if (n_s != rx_expected_Ns) {
+            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1; // RR pede sempre a próxima
+            sendSupervisionFrame(A_RX, rr_c);
+            // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
+            continue; 
+        }
+        // 2º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
         if (bcc2_calc != bcc2_received) {
             unsigned char rej_c = (n_s == 0) ? C_REJ0 : C_REJ1;
             sendSupervisionFrame(A_RX, rej_c); // A=0x03 para respostas do Rx
+            //printf("rej sent.");
             continue; // Voltar ao início e esperar que o Emissor retransmita
         }
         
-        // 2º Cenário: Trama Correta E Esperada -> Enviar RR e entregar os dados
+        // 3º Cenário: Trama Correta E Esperada -> Enviar RR e entregar os dados
         if (n_s == rx_expected_Ns) {
             rx_expected_Ns = (rx_expected_Ns + 1) % 2; // Alternar a que esperamos (0->1, 1->0)
             unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1;
@@ -350,13 +370,6 @@ int llReceive(unsigned char *packet) {
             
             // Retorna o tamanho do buffer de dados menos o byte do BCC2
             return payload_idx - 1; 
-        } 
-        // 3º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
-        else {
-            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1; // RR pede sempre a próxima
-            sendSupervisionFrame(A_RX, rr_c);
-            // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
-            continue; 
         }
     }
 }
