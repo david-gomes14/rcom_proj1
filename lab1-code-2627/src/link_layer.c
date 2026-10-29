@@ -35,10 +35,24 @@ typedef enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP } frameState;
 int alarmCount = 0;
 int alarmEnabled = FALSE;
 
+// [STATS] Contadores de estatísticas
+// Tx
+static int stat_iFramesSent = 0;      // total de escritas de tramas I (inclui retransmissões)
+static int stat_iFramesAcked = 0;     // tramas I distintas confirmadas com RR
+static int stat_retransmissions = 0;  // reenvios (por timeout ou REJ)
+static int stat_rejReceived = 0;      // REJ recebidos
+static int stat_timeouts = 0;         // alarmes disparados
+// Rx
+static int stat_framesReceived = 0;   // tramas I recebidas (válidas, com erros ou duplicadas)
+static int stat_framesAccepted = 0;   // tramas I aceites e entregues à aplicação
+static int stat_rejSent = 0;          // REJ enviados
+static int stat_duplicates = 0;       // duplicadas descartadas
+
 void alarmHandler(int signal){
     // Can be used to change a flag that increases the number of alarms
     alarmEnabled = FALSE;
     alarmCount++;
+    stat_timeouts++; // [STATS]
     printf("Alarm #%d received\n", alarmCount);
 }
 
@@ -241,10 +255,15 @@ int llSend(const unsigned char *buf, int bufSize) {
     unsigned char expected_rej = (tx_Ns == 0) ? C_REJ0 : C_REJ1; // 0x54 = REJ0 ou 0x55 = REJ1
     unsigned char c_rcv = 0;
 
+    int firstTransmission = TRUE; // [STATS]
+
     while (alarmCount <= ll_nRetransmissions && !accepted) {
         // Enviar trama
         if (!alarmEnabled) { 
             writeBytesSerialPort(frame, frame_size);
+            stat_iFramesSent++;                              // [STATS]
+            if (!firstTransmission) stat_retransmissions++;  // [STATS]
+            firstTransmission = FALSE;                       // [STATS]
             alarm(ll_timeout); // Ativar alarme
             alarmEnabled = TRUE;
         }
@@ -253,9 +272,11 @@ int llSend(const unsigned char *buf, int bufSize) {
         if (readSupervisionFrame(A_RX, &c_rcv) == 0) {
             if (c_rcv == expected_rr) { // Recepção bem sucedida!
                 accepted = TRUE;
+                stat_iFramesAcked++; // [STATS]
                 alarm(0); // Desligar alarme
                 tx_Ns = (tx_Ns + 1) % 2; // Avançar para a próxima trama (0->1 ou 1->0)
             } else if (c_rcv == expected_rej) { // Trama com erros
+                stat_rejReceived++; // [STATS]
                 alarm(0); // Cancelar alarme para retransmitir imediatamente
                 alarmEnabled = FALSE;
             }
@@ -271,8 +292,9 @@ int llSend(const unsigned char *buf, int bufSize) {
 // LLRECEIVE
 ////////////////////////////////////////////////
 int llReceive(unsigned char *packet) {
+
     // Loop infinito até ser recebida uma trama válida E nova
-    while (1) {
+    while (TRUE) {
         frameState state = START;
         unsigned char a, c;
         int payload_idx = 0;
@@ -292,7 +314,7 @@ int llReceive(unsigned char *packet) {
                     else if (byte != FLAG) state = START;
                     break;
                 case A_RCV: 
-                    if (byte == 0x00 || byte == 0x80) { c = byte; state = C_RCV; }
+                    if (byte == 0x00 || byte == 0x80 || byte == C_SET) { c = byte; state = C_RCV; }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START; // Ignora se não for trama I
                     break;
@@ -302,6 +324,17 @@ int llReceive(unsigned char *packet) {
                     else state = START;
                     break;
                 case BCC_OK: // Começam os dados
+                    if (c == C_SET) {
+                        if (byte == FLAG) {
+                            sendSupervisionFrame(A_TX, C_UA);
+                            state = START;
+                        }
+                        else {
+                            state = START;
+                        }
+                        break;
+                    }
+
                     if (byte == FLAG) {
                         state = STOP; // Terminou a trama
                     } else if (byte == 0x7D) {
@@ -321,6 +354,8 @@ int llReceive(unsigned char *packet) {
         
         // Verificar se os dados têm tamanho suficiente
         if (payload_idx < 1) continue; 
+
+        stat_framesReceived++; // [STATS]
         
         // O último byte do pacote "Destuffed" é o BCC2
         unsigned char bcc2_received = packet[payload_idx - 1];
@@ -335,28 +370,32 @@ int llReceive(unsigned char *packet) {
         unsigned char n_s = (c == 0x80) ? 1 : 0;
         
         // Tesstar os cenários:
-        // 1º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
+        // 1º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
+        if (n_s != rx_expected_Ns) {
+            stat_duplicates++; // [STATS]
+            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1; // RR pede sempre a próxima
+            sendSupervisionFrame(A_RX, rr_c);
+            // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
+            continue; 
+        }
+        // 2º Cenário - Dados com Erro (BCC2 inválido) -> Enviar REJ
         if (bcc2_calc != bcc2_received) {
+            stat_rejSent++; // [STATS]
             unsigned char rej_c = (n_s == 0) ? C_REJ0 : C_REJ1;
             sendSupervisionFrame(A_RX, rej_c); // A=0x03 para respostas do Rx
+            //printf("rej sent.");
             continue; // Voltar ao início e esperar que o Emissor retransmita
         }
         
-        // 2º Cenário: Trama Correta E Esperada -> Enviar RR e entregar os dados
+        // 3º Cenário: Trama Correta E Esperada -> Enviar RR e entregar os dados
         if (n_s == rx_expected_Ns) {
+            stat_framesAccepted++; // [STATS]
             rx_expected_Ns = (rx_expected_Ns + 1) % 2; // Alternar a que esperamos (0->1, 1->0)
             unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1;
             sendSupervisionFrame(A_RX, rr_c);
             
             // Retorna o tamanho do buffer de dados menos o byte do BCC2
             return payload_idx - 1; 
-        } 
-        // 3º Cenário: Trama Correta mas DUPLICADA -> Enviar RR mas descartar dados
-        else {
-            unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1; // RR pede sempre a próxima
-            sendSupervisionFrame(A_RX, rr_c);
-            // Ignora o pacote (continue). O While faz com que fiquemos à espera da trama correta
-            continue; 
         }
     }
 }
@@ -447,3 +486,22 @@ int llCloseRx()
 
     return 0;
 }
+
+// Impressão das estatísticas da camada de ligação
+void llPrintStatistics(int isTx) {
+    printf("\n========== LINK LAYER STATISTICS (%s) ==========\n", isTx ? "TX" : "RX");
+    if (isTx) {
+        printf("I-frames sent (total)    : %d\n", stat_iFramesSent);
+        printf("I-frames acknowledged    : %d\n", stat_iFramesAcked);
+        printf("Retransmissions          : %d\n", stat_retransmissions);
+        printf("REJ received             : %d\n", stat_rejReceived);
+        printf("Timeouts                 : %d\n", stat_timeouts);
+    } else {
+        printf("I-frames received (total): %d\n", stat_framesReceived);
+        printf("I-frames accepted        : %d\n", stat_framesAccepted);
+        printf("REJ sent                 : %d\n", stat_rejSent);
+        printf("Duplicates discarded     : %d\n", stat_duplicates);
+    }
+    printf("================================================\n");
+}
+
