@@ -134,7 +134,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             printf("Error sending START (llSend failed).\n");
             if (llCloseTx() < 0) {
                 printf("Error: llCloseTx failed.\n");
-                return;
             }
             fclose(file);
             return;
@@ -170,7 +169,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 printf("Error sending Data (packet %d, %d bytes, remaining %ld).\n", packetNumber, bytesRead, bytesRemaining);
                 if (llCloseTx() < 0) {
                     printf("Error: llCloseTx failed.\n");
-                    return;
                 }
                 fclose(file);
                 return;
@@ -190,7 +188,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             printf("Error sending END (llSend failed).\n");
             if (llCloseTx() < 0) {
                 printf("Error: llCloseTx failed.\n");
-                return;
             }
             fclose(file);
             return;
@@ -249,6 +246,8 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 } else {
                     printf("Connection closed after aborted transfer.\n");
                 }
+
+                return;
             }
 
             if (packetSize < 0) {

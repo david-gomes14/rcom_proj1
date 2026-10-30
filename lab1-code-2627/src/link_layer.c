@@ -258,15 +258,15 @@ int llSend(const unsigned char *buf, int bufSize) {
     unsigned char expected_rej = (tx_Ns == 0) ? C_REJ0 : C_REJ1; // 0x54 = REJ0 ou 0x55 = REJ1
     unsigned char c_rcv = 0;
 
-    int firstTransmission = TRUE; // [STATS]
-
-    while (alarmCount <= ll_nRetransmissions && !accepted) {
+    int attempts = 0;
+    while (!accepted) {
         // Enviar trama
         if (!alarmEnabled) { 
+            if (attempts > ll_nRetransmissions) break;
             writeBytesSerialPort(frame, frame_size);
-            stat_iFramesSent++;                              // [STATS]
-            if (!firstTransmission) stat_retransmissions++;  // [STATS]
-            firstTransmission = FALSE;                       // [STATS]
+            stat_iFramesSent++; // [STATS]
+            if (attempts > 0) stat_retransmissions++; // [STATS]
+            attempts++;
             alarm(ll_timeout); // Ativar alarme
             alarmEnabled = TRUE;
         }
@@ -304,6 +304,7 @@ int llReceive(unsigned char *packet) {
         unsigned char a, c;
         int payload_idx = 0;
         int escape = FALSE;
+        int oversized = FALSE;
         
         // Máquina de estados para Trama I
         while (state != STOP) {
@@ -354,11 +355,12 @@ int llReceive(unsigned char *packet) {
                     } else if (byte == 0x7D) {
                         escape = TRUE; // Próximo byte sofre destuffing
                     } else {
-                        if (escape) {
-                            packet[payload_idx++] = byte ^ 0x20; // Destuffing em tempo real
-                            escape = FALSE;
+                        unsigned char decoded = escape ? (byte ^ 0x20) : byte;
+                        escape = FALSE;
+                        if (payload_idx < MAX_PAYLOAD_SIZE + 1) {
+                            packet[payload_idx++] = decoded;
                         } else {
-                            packet[payload_idx++] = byte;
+                            oversized = TRUE;
                         }
                     }
                     break;
@@ -370,6 +372,23 @@ int llReceive(unsigned char *packet) {
         if (payload_idx < 1) continue; 
 
         stat_framesReceived++; // [STATS]
+
+        if (oversized) {
+            unsigned char n_s = (c == 0x80) ? 1 : 0;
+
+            if (n_s == rx_expected_Ns) {
+                // Trama esperada, mas inválida
+                unsigned char rej_c = (n_s == 0) ? C_REJ0 : C_REJ1;
+                if (sendSupervisionFrame(A_RX, rej_c) != SUP_FRAME_SIZE) return -1;
+                stat_rejSent++;
+            } else {
+                // Repetir a confirmação anterior
+                unsigned char rr_c = (rx_expected_Ns == 0) ? C_RR0 : C_RR1;
+                if (sendSupervisionFrame(A_RX, rr_c) != SUP_FRAME_SIZE) return -1;
+                stat_duplicates++;
+            }
+            continue;
+        }
         
         // O último byte do pacote "Destuffed" é o BCC2
         unsigned char bcc2_received = packet[payload_idx - 1];
