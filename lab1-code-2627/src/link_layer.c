@@ -48,6 +48,8 @@ static int stat_framesAccepted = 0;   // tramas I aceites e entregues à aplica�
 static int stat_rejSent = 0;          // REJ enviados
 static int stat_duplicates = 0;       // duplicadas descartadas
 
+static int rxDiscPending = FALSE;
+
 void alarmHandler(int signal){
     // Can be used to change a flag that increases the number of alarms
     alarmEnabled = FALSE;
@@ -188,6 +190,7 @@ int llOpenRx(LinkLayer llParameters) {
     
     unsigned char c_rcv;
     int connected = FALSE;
+    rxDiscPending = FALSE;
 
     // Fica passivamente à espera do SET
     while (!connected) {
@@ -282,7 +285,9 @@ int llSend(const unsigned char *buf, int bufSize) {
             }
         }
     }
-    
+
+    alarm(0);
+    alarmEnabled = FALSE;
     free(frame);
     if (!accepted) return -1; // Falha por excesso de retransmissões
     return frame_size;
@@ -314,7 +319,7 @@ int llReceive(unsigned char *packet) {
                     else if (byte != FLAG) state = START;
                     break;
                 case A_RCV: 
-                    if (byte == 0x00 || byte == 0x80 || byte == C_SET) { c = byte; state = C_RCV; }
+                    if (byte == 0x00 || byte == 0x80 || byte == C_SET || byte == C_DISC) { c = byte; state = C_RCV; }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START; // Ignora se não for trama I
                     break;
@@ -324,6 +329,15 @@ int llReceive(unsigned char *packet) {
                     else state = START;
                     break;
                 case BCC_OK: // Começam os dados
+                    if (c == C_DISC) {
+                        if (byte == FLAG) {
+                            rxDiscPending = TRUE;
+                            printf("DISC received during transfer.\n");
+                            return -2;
+                        }
+                        state = START;
+                        break;
+                    }
                     if (c == C_SET) {
                         if (byte == FLAG) {
                             sendSupervisionFrame(A_TX, C_UA);
@@ -449,7 +463,7 @@ int llCloseRx()
     unsigned char c_rcv;
     int connected = TRUE;
 
-    while (connected) {
+    while (!rxDiscPending && connected) {
         if (readSupervisionFrame(A_TX, &c_rcv) == 0) {
             if (c_rcv == C_DISC) {
                 printf("DISC received.\n");
@@ -457,6 +471,8 @@ int llCloseRx()
             }
         }
     }
+
+    rxDiscPending = FALSE;
 
     while (alarmCount <= ll_nRetransmissions && connected) {
 

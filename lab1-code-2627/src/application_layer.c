@@ -132,6 +132,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         if (llSend(controlPacket, idx) < 0) {
             printf("Error sending START (llSend failed).\n");
+            if (llCloseTx() < 0) {
+                printf("Error: llCloseTx failed.\n");
+                return;
+            }
             fclose(file);
             return;
         }
@@ -164,6 +168,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
             if (llSend(dataPacket, DATA_HEADER_SIZE + bytesRead) < 0) {
                 printf("Error sending Data (packet %d, %d bytes, remaining %ld).\n", packetNumber, bytesRead, bytesRemaining);
+                if (llCloseTx() < 0) {
+                    printf("Error: llCloseTx failed.\n");
+                    return;
+                }
                 fclose(file);
                 return;
             }
@@ -180,6 +188,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         if (llSend(controlPacket, idx) < 0) {
             printf("Error sending END (llSend failed).\n");
+            if (llCloseTx() < 0) {
+                printf("Error: llCloseTx failed.\n");
+                return;
+            }
             fclose(file);
             return;
         }
@@ -225,6 +237,20 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         while (TRUE) {
             int packetSize = llReceive(packet);
+            if (packetSize == -2) {
+                printf("Error: transfer aborted by transmitter.\n");
+                if (file != NULL) {
+                    fclose(file);
+                    file = NULL;
+                }
+
+                if (llCloseRx() < 0) {
+                    printf("Error completing disconnection.\n");
+                } else {
+                    printf("Connection closed after aborted transfer.\n");
+                }
+            }
+
             if (packetSize < 0) {
                 printf("Error: llReceive failed.\n");
                 if (file != NULL) fclose(file);
